@@ -38,12 +38,6 @@ n_prompt    = "longbody, lowres, bad anatomy, bad hands, missing fingers, extra 
 # 正负扩大倍数
 scale       = 9
 
-
-
-
-
-
-
 def create_model(config_path):
     config = OmegaConf.load(config_path)
     model = instantiate_from_config(config.model).cpu()
@@ -60,10 +54,6 @@ def main():
     model = create_model('model_data/watermark.yaml').cpu()
     model.load_state_dict(torch.load('model_data/v1-5-pruned-emaonly.safetensors'), strict=False)
     model.cuda()
-
-
-
-
     #configure the optimizer
     #optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     # just optimize the embedder and extractor
@@ -71,6 +61,7 @@ def main():
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1000, gamma=0.98)
     #instantiating the DDIM sampler
     ddim_sampler = DDIMSampler(model)
+    ddim_sampler.sample(20, 1, 0, 12345, 1.00, prompt, a_prompt, n_prompt, 9)
 
 
 

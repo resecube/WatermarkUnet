@@ -8,8 +8,11 @@ from ldm.models.diffusion.ddpm import LatentDiffusion
 import torch.nn.functional as F
 import random
 
+bit_length = 48
 
-def generate_random_bit_vector(bit_length=128):
+# [1,0,1 , ..., 0,1,0]
+
+def generate_random_bit_vector(bit_length=48):
     """生成随机的比特向量"""
     return torch.tensor([random.randint(0, 1) for _ in range(bit_length)]).int()
 
@@ -17,17 +20,18 @@ def generate_random_bit_vector(bit_length=128):
 class WatermarkExtracor(nn.Module):
     def __init__(self):
         super(WatermarkExtracor, self).__init__()
+        #[b,1280,8,8] 1280个通道，每个通道8*8的特征图，作为输入 b,w,h,c->b,c,w,h
         self.conv1 = nn.Conv2d(4, 16, kernel_size=3, stride=2, padding=1)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1)
         self.conv3 = nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1)
-        self.fc = nn.Linear(64 * 8 * 8, 128)  # 适应最后一个卷积层的输出
+        self.fc = nn.Linear(64 * 8 * 8, bit_length)  # 适应最后一个卷积层的输出
 
     def forward(self, x):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
         x = torch.flatten(x, start_dim=1)
-        x = torch.sigmoid(self.fc(x))  # 使用sigmoid激活函数以获取0到1之间的值
+        x = torch.sigmoid(self.fc(x))  # 使用sigmoid激活函数把像素值归一化到0到1之间
         return (x > 0.5).int()  # 二值化为0或1的比特串
 
 
@@ -38,14 +42,18 @@ class WatermarkUnet(openaimodel.UnetModel):
         num_heads = kwargs.get("num_heads", 8)
         transformer_depth = kwargs.get("transformer_depth", 1)
         context_dim = kwargs.get("context_dim", 768)
+        # 用于嵌入水印的模块，只是重复了中间层SpatialTransformer   Hidden autoEncoder
         self.embedder = SpatialTransformer(self.mid_channels, num_heads, self.mid_dim_head, depth=transformer_depth,
                                            context_dim=context_dim)
+        # ----------------------watermark embedding ended---------------------------#
         self.extractor = WatermarkExtracor()
         # self.mid_block.append(self.embedder)
         self.shortcut = nn.Sequential()
+        # unet 下采样的结果
         self.unet_encoded = None
+        # unet 中间层的结果，这里可以用来输入到原来的输出模块
         self.mid_out = None
-        self.watermark = generate_random_bit_vector(128)
+        self.watermark = generate_random_bit_vector(bit_length)
 
     def forward(self, x, timesteps=None, context=None, y=None, **kwargs):
         self.dtype = self.time_embed[0].weight.dtype
@@ -71,7 +79,7 @@ class WatermarkUnet(openaimodel.UnetModel):
         h = self.middle_block(h, emb, context)
         # ----------------------watermark embedding ---------------------------#
         #                         水印嵌入
-        self.mid_out = h
+        self.mid_out = copy.deepcopy(h)
         # 直接将水印嵌入到中间层 获取嵌入水印的输出 hw
         hw = self.shortcut(h) + self.embedder(h, emb, self.watermark)
         hsw = copy.deepcopy(hs)
@@ -128,10 +136,13 @@ class WatermarkLatentDiffusion(LatentDiffusion):
         # 将x_noisy传入self.model中
         x0,xw = self.model(x_noisy, t, **cond)
         return x0,xw
-
+    #x0是原模型的预测噪声的潜在表示，xw是嵌入水印的输出
     def p_loss(self, x0, xw):
         # 计算x0和xw的loss
         loss0 = self.model.get_bitAcc_loss()
-        lossw = F.mse_loss(x0, xw)
+        lossw = F.mse_loss(x0, xw) # TODO: utilize mean matrix loss
         return loss0,lossw
+    def train(self):
+        pass
+
 

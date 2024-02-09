@@ -189,8 +189,9 @@ class TrainWatermarkSampler(object):
         b, *_, device = *x.shape, x.device
         e_t,e_tw = self.model.apply_model(x, t, c)
         loss0,lossw = self.model.p_losses(e_t,e_tw)
-
+        # 损失函数计算
         loss = abs(loss0) + theta* abs(lossw)
+        # print(f"loss0: {loss0}, lossw: {lossw}, loss: {loss}")
         # 还要配置优化器 和 冻结参数
         optimizer.clear_grad()
         # 关于冻结参数：只需要保留水印嵌入的参数，其他参数都可以冻结
