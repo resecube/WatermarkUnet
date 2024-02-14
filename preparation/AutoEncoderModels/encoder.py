@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 class Encoder(nn.Module):
-    def __init__(self,channels_in=3,channels_out=3,channels_hidden=64,watermark_length=30,H=128,W=128):
+    def __init__(self,channels_in=3,channels_out=3,channels_hidden=64,watermark_length=30,H=16,W=16):
         super(Encoder, self).__init__()
         self.conv_layers = nn.Sequential(
             nn.Conv2d(channels_in, channels_hidden, kernel_size=3, stride=1, padding=1),
@@ -43,6 +43,9 @@ class Encoder(nn.Module):
         # 接着，连接 expanded_message, conved_image, image
         # print("conved_image.shape: ", conved_image.shape)
         # print("expanded_message.shape: ", expanded_message.shape)
+        # print("image.shape: ", image.shape)
+        # print("expanded_message.shape: ", expanded_message.shape)
+        # print("conved_image.shape: ", conved_image.shape)
         # print("image.shape: ", image.shape)
         concat = torch.cat([expanded_message, conved_image, image], dim=1)
         im_w = self.after_concat_layer(concat)

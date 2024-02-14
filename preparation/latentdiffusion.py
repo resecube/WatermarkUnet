@@ -3,6 +3,11 @@ import os
 import torch
 import torch.nn as nn
 import ldm.modules.diffusionmodules.openaimodel as openaimodel
+
+
+from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
+
+
 from ldm.modules.attention import SpatialTransformer
 from ldm.models.diffusion.ddpm import LatentDiffusion
 import torch.nn.functional as F
@@ -11,11 +16,11 @@ from preparation.AutoEncoderModels.encoder import Encoder as CustomEmbedder
 from preparation.AutoEncoderModels.decoder import Decoder as CustomExtractor
 from preparation.AutoEncoderModels.discriminator import Discriminator as CustomDiscriminator
 from tqdm import tqdm
-bit_length = 48
+bit_length = 30
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # [1,0,1 , ..., 0,1,0]
 
-def generate_random_bit_vector(bit_length=48):
+def generate_random_bit_vector(bit_length=30):
     """生成随机的比特向量"""
     return torch.tensor([random.randint(0, 1) for _ in range(bit_length)]).int()
 
@@ -40,7 +45,7 @@ class WatermarkExtracor(nn.Module):
 
 
 class WatermarkUnet(openaimodel.UNetModel):
-    def __init__(self, embedder = CustomEmbedder(1280,1280,2560,bit_length,128,128),
+    def __init__(self, embedder = CustomEmbedder(1280,1280,2560,bit_length),
                  extractor = CustomExtractor()
                  ,watermark = None,*args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -71,9 +76,9 @@ class WatermarkUnet(openaimodel.UNetModel):
             self.watermark = watermark.to(device)
         else:
             self.watermark = generate_random_bit_vector(bit_length).to(device)
-        self.bit_acc_loss = None
         self.loss_model = None
         self.loss = None
+        self.loss_bit_acc = None
 
     def forward(self, x, timesteps=None, context=None, y=None, **kwargs):
         self.dtype = self.time_embed[0].weight.dtype
@@ -99,10 +104,10 @@ class WatermarkUnet(openaimodel.UNetModel):
         h = self.middle_block(h, emb, context)
         # ----------------------watermark embedding ---------------------------#
         #                         水印嵌入
-        self.mid_out = copy.deepcopy(h)
+        self.mid_out = h.clone()
         # 直接将水印嵌入到中间层 获取嵌入水印的输出 hw
-        hw = self.shortcut(self.mid_out) + self.embedder(self.mid_out, emb, self.watermark)
-        hsw = copy.deepcopy(hs)
+        hw = self.shortcut(self.mid_out) + self.embedder(self.mid_out, self.watermark.unsqueeze(0))
+        hsw = [h.clone() for h in hs]
         for module in self.output_blocks:
             hw = torch.cat([hw, hsw.pop()], dim=1)
             hw = module(hw, emb, context)
@@ -120,13 +125,13 @@ class WatermarkUnet(openaimodel.UNetModel):
         else:
             return self.out(h), self.out(hw)
 
-    def freeze(self,unfreezeEmbedder=True,unfreezeExtractor=True):
+    def frozen(self,unfreezeEmbedder=True,unfreezeExtractor=True):
         for param in self.parameters():
             param.requires_grad = False
-        for param in self.embedder.parameters():
-            param.requires_grad = unfreezeEmbedder
-        for param in self.extractor.parameters():
-            param.requires_grad = unfreezeExtractor
+        # for param in self.embedder.parameters():
+        #     param.requires_grad = unfreezeEmbedder
+        # for param in self.extractor.parameters():
+        #     param.requires_grad = unfreezeExtractor
 
     def unfreezeExtractor(self):
         for param in self.extractor.parameters():
@@ -135,17 +140,23 @@ class WatermarkUnet(openaimodel.UNetModel):
         for param in self.embedder.parameters():
             param.requires_grad = True
 
-
     def get_bitAcc_loss(self):
         # 计算相同位数
         same_bits = torch.sum(self.watermark == self.extractor(self.unet_encoded)).item()
-        return 1 - same_bits / len(self.watermark)
-
+        return torch.tensor([1 - same_bits / len(self.watermark)], requires_grad=True, device=device)
 
 class WatermarkLatentDiffusion(LatentDiffusion):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.model.freeze()
+        self.first_stage_model.freeze()
+        self.cond_stage_model.freeze()
+        self.model.diffusion_model.frozen()
+        self.model.diffusion_model.unfreezeEmbedder()
+        self.model.diffusion_model.unfreezeExtractor()
+        # for parameter in self.model.diffusion_model.output_blocks.parameters():
+        #     parameter.requires_grad = True
+        # self.model.diffusion_model.frozen()
+        # self.model.frozen()
         self.optimizer = torch.optim.Adam([*self.model.diffusion_model.embedder.parameters(),*self.model.diffusion_model.extractor.parameters()], lr=1e-4)
 
     def apply_model(self, x_noisy, t, cond, return_ids=False):
@@ -284,6 +295,10 @@ class WatermarkLatentDiffusion(LatentDiffusion):
         self.loss_bit_acc = self.model.get_bitAcc_loss()
         self.loss_model = F.mse_loss(model_mean, model_mean_w)
 
+        print(self.loss_bit_acc.requires_grad)
+        print(self.loss_model.requires_grad)
+        self.loss_model.requires_grad_()
+        self.loss_bit_acc.requires_grad_()
         self.loss = self.loss_model + self.loss_bit_acc
         self.optimizer.zero_grad()
         self.loss.backward()
@@ -307,11 +322,11 @@ class WatermarkLatentDiffusion(LatentDiffusion):
         scale = 9
         cond    = {"c_crossattn": [self.get_learned_conditioning([prompt + ', ' + a_prompt] * 1)]}
         # un_cond = {"c_crossattn": [self.get_learned_conditioning([n_prompt] * 1)]}
-        for i in range(10000):
-            self.progressive_denoising(cond,start_T=50,shape=[1,4,128,128],verbose=True,log_every_t=1)
-            if i % 100 == 0:
+        for i in range(1000):
+            self.progressive_denoising(cond,start_T=30,shape=[1,4,128,128],verbose=True,log_every_t=1)
+            if i % 5 == 0:
                 print(f"epoch:{i},loss:{self.loss.item()},bit_acc_loss:{self.loss_bit_acc.item()},model_loss:{self.loss_model.item()}")
                 # save the model
-                torch.save(self.model.embedder.state_dict(), "embedder.pth")
-                torch.save(self.model.extractor.state_dict(), "extractor.pth")
+                torch.save(self.model.diffusion_model.embedder.state_dict(), "model_data/embedder.pth")
+                torch.save(self.model.diffusion_model.extractor.state_dict(), "model_data/extractor.pth")
 

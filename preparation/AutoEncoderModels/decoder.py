@@ -28,11 +28,11 @@ class Decoder(nn.Module):
         self.config = {
             "decoder_blocks": 7,
             "decoder_channels": 2560,
-            "message_length": 48
+            "message_length": 30
         }
         self.channels = self.config['decoder_channels']
 
-        layers = [ConvBNRelu(3, self.channels)]
+        layers = [ConvBNRelu(1280, self.channels)]
         for _ in range(self.config['decoder_blocks'] - 1):
             layers.append(ConvBNRelu(self.channels, self.channels))
 
@@ -51,7 +51,7 @@ class Decoder(nn.Module):
         x = self.linear(x)
         x = torch.sigmoid(x)
         x = (x > 0.5).int()
-        print("消息：", x)
+        # print("消息：", x)
         return x
 
 

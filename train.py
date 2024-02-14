@@ -1,20 +1,28 @@
 from ldm_hacked import *
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+import gc
+import torch
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def main():
     # load the model and checkpoint
     model = create_model('model_data/watermark.yaml').cpu()
     print("to load data")
-    model.load_state_dict(load_state_dict('model_data/v1-5-pruned-emaonly.safetensors', location='cpu'), strict=False)
+    model.load_state_dict(load_state_dict('/root/autodl-tmp/v1-5-pruned-emaonly.safetensors', location='cpu'), strict=False)
+    print('data loaded')
     model.to(device)
+    clear_gpu_memory()
     model.train()
 
 
-
+def clear_gpu_memory():
+    torch.cuda.empty_cache()
+    gc.collect()
 
 
 
 if __name__ == '__main__':
+    clear_gpu_memory()
     main()
     # devices             = [0]
     # # Config信息，这里是sd15
